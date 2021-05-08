@@ -128,7 +128,6 @@ int main (int argc, char *argv[])
 	MPI_Barrier(MPI_COMM_WORLD);
 	
 	tsend = get_seconds(ti,tf);
-		fprintf (stderr, "(PERF) Time (seconds) = %lf, num Operaciones = %i\n", tsend, flops);
 	MPI_Gather(&tsend, 1, MPI_FLOAT, 
 				tiempos, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
 	MPI_Gather(&flops, 1, MPI_INT, 
@@ -147,6 +146,7 @@ int main (int argc, char *argv[])
 		}
 		
 		for(i=0; i<numProcs; i++){
+			fprintf (stderr, "(PERF) Time (seconds) = %lf, num Operaciones = %i\n", tiempos[i], arrFlops[i]);
 			flopsTotal += arrFlops[i];
 			if((arrFlops[i]*1.0)/tiempos[i] > maxFlops);
 				maxFlops = (arrFlops[i]*1.0)/tiempos[i];
