@@ -7,6 +7,7 @@ with z_0 = 0 does not tend to infinity.*/
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
+#include <mpi.h>
 
 #define DEBUG 1
 
@@ -33,7 +34,7 @@ static inline double get_seconds(struct timeval t_ini, struct timeval t_end)
          (t_end.tv_sec - t_ini.tv_sec);
 }
 
-int main ( )
+int main (int argc, char *argv[])
 {
 	MPI_Init(&argc, &argv);
 
@@ -42,16 +43,28 @@ int main ( )
 	Compl   z, c;
 	float   lengthsq, temp;
 	int *vres, *res[Y_RESN];
+	int *vresParcial, *resParcial[Y_RESN];
 	int numProcs, rank;
-	int filasPorProceso;
+	int filasPorProceso, filaInicio, filaFin;
+
+	/* Timestamp variables */
+	struct timeval  ti, tf;
+	float			*tiempos;
+	float maxt = 0.0;
+	float tsend;
+	float ttotal = 0.0;
+
+	float maxFlops = 0.0;
+	int flops = 0;
+	int flopsTotal = 0;
+	int *arrFlops;
+	float balanceo;
 
 	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
 	filasPorProceso = (int)Y_RESN/numProcs;
 
-	/* Timestamp variables */
-	struct timeval  ti, tf;
 
 	if(rank == 0){	
 		/* Allocate result matrix of Y_RESN x X_RESN */
@@ -62,15 +75,18 @@ int main ( )
 		}
 		for (i=0; i<Y_RESN; i++)
 			res[i] = vres + i*X_RESN;
-	}else{
-		vres = (int *) malloc(X_RESN * filasPorProceso * sizeof(int))
-		if (!vres){
-			fprintf(stderr, "Error allocating memory\n");
-			return 1;
-		}
-		for (i=0; i<filasPorProceso; i++)
-			res[i] = vres + i*X_RESN;
+
+		tiempos = (float *) malloc(numProcs * sizeof(float));
+		arrFlops = (int *) malloc(numProcs * sizeof(int));
 	}
+
+	vresParcial = (int *) malloc(X_RESN * filasPorProceso * sizeof(int));
+	if (!vresParcial){
+		fprintf(stderr, "Error allocating memory\n");
+		return 1;
+	}
+	for (i=0; i<filasPorProceso; i++)
+		resParcial[i] = vresParcial + i*X_RESN;
 
 	/* Start measuring time */
 	gettimeofday(&ti, NULL);
@@ -88,6 +104,8 @@ int main ( )
 			c.imag = Y_MAX - i * (Y_MAX - Y_MIN)/Y_RESN;
 			k = 0;
 
+			flops += 8;
+
 			do
 			{    /* iterate for pixel color */
 				temp = z.real*z.real - z.imag*z.imag + c.real;
@@ -95,27 +113,59 @@ int main ( )
 				z.real = temp;
 				lengthsq = z.real*z.real+z.imag*z.imag;
 				k++;
+
+				flops += 10;
 			} while (lengthsq < 4.0 && k < maxIterations);
 
-			if (k >= maxIterations) res[i][j] = 0;
-			else res[i-rank*filasPorProceso][j] = k;
+			if (k >= maxIterations) resParcial[i%filasPorProceso][j] = 0;
+			else resParcial[i%filasPorProceso][j] = k;
 		}
 	}
 
 	/* End measuring time */
 	gettimeofday(&tf, NULL);
-	fprintf (stderr, "(PERF) Time (seconds) = %lf\n", get_seconds(ti,tf));
 
-	/* Print result out */
-	if( DEBUG ) {
-		for(i=0;i<Y_RESN;i++) {
-			for(j=0;j<X_RESN;j++)
-				printf("%3d ", res[i][j]);
-			printf("\n");
+	MPI_Barrier(MPI_COMM_WORLD);
+	
+	tsend = get_seconds(ti,tf);
+		fprintf (stderr, "(PERF) Time (seconds) = %lf, num Operaciones = %i\n", tsend, flops);
+	MPI_Gather(&tsend, 1, MPI_FLOAT, 
+				tiempos, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
+	MPI_Gather(&flops, 1, MPI_INT, 
+				arrFlops, 1, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Gather(vresParcial, X_RESN*filasPorProceso, MPI_INT, 
+				vres, X_RESN*filasPorProceso, MPI_INT, 0, MPI_COMM_WORLD);
+
+	if(rank == 0){
+		/* Print result out */
+		if( DEBUG) {
+			for(i=0;i<Y_RESN;i++) {
+				for(j=0;j<X_RESN;j++)
+					printf("%3d ", res[i][j]);
+				printf("\n");
+			}
 		}
+		
+		for(i=0; i<numProcs; i++){
+			flopsTotal += arrFlops[i];
+			if((arrFlops[i]*1.0)/tiempos[i] > maxFlops);
+				maxFlops = (arrFlops[i]*1.0)/tiempos[i];
+
+			if(tiempos[i] > maxt)
+				maxt = tiempos[i];
+
+			ttotal += tiempos[i];
+		}
+		fprintf (stderr, "\nTiempo total = %lf\n", maxt);
+
+		balanceo = ((flopsTotal*1.0) / maxt) / (maxFlops * (numProcs*1.0));
+		fprintf (stderr, "Balanceo = %lf\n", balanceo);
+
 	}
+	
 
 	free(vres);
+	free(tiempos);
 	
 	MPI_Finalize();
 
