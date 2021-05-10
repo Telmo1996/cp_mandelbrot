@@ -144,21 +144,25 @@ int main (int argc, char *argv[])
 				printf("\n");
 			}
 		}
-		
+
+
 		for(i=0; i<numProcs; i++){
+			//Imprimir tiempos
 			fprintf (stderr, "(PERF) Time (seconds) = %lf, num Operaciones = %i\n", tiempos[i], arrFlops[i]);
+
 			flopsTotal += arrFlops[i];
-			if((arrFlops[i]*1.0)/tiempos[i] > maxFlops);
-				maxFlops = (arrFlops[i]*1.0)/tiempos[i];
+			if(arrFlops[i] > maxFlops)
+				maxFlops = arrFlops[i];
 
 			if(tiempos[i] > maxt)
 				maxt = tiempos[i];
 
 			ttotal += tiempos[i];
 		}
+
 		fprintf (stderr, "\nTiempo total = %lf\n", maxt);
 
-		balanceo = ((flopsTotal*1.0) / maxt) / (maxFlops * (numProcs*1.0));
+		balanceo = (flopsTotal) / ((float)maxFlops * (float)numProcs);
 		fprintf (stderr, "Balanceo = %lf\n", balanceo);
 
 	}
