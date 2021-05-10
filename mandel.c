@@ -45,7 +45,8 @@ int main (int argc, char *argv[])
 	int *vres, *res[Y_RESN];
 	int *vresParcial, *resParcial[Y_RESN];
 	int numProcs, rank;
-	int filasPorProceso, filaInicio, filaFin;
+	int *filasPorProceso, filaInicio, filaFin;
+	int *filasIniciales, *filasFinales;
 
 	/* Timestamp variables */
 	struct timeval  ti, tf;
@@ -60,11 +61,30 @@ int main (int argc, char *argv[])
 	int *arrFlops;
 	float balanceo;
 
+
 	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-	filasPorProceso = (int)Y_RESN/numProcs;
+	int recvcounts[numProcs];
+	int displs[numProcs];
 
+	filasIniciales = (int*) malloc(numProcs*sizeof(int));
+	filasFinales = (int*) malloc(numProcs*sizeof(int));
+
+	//Calcular filas iniciales y finales de cada proceso
+	for(i=0; i<numProcs; i++){
+		if(i < Y_RESN%numProcs){
+			filasPorProceso[i] = Y_RESN % numProcs +1;
+			filasIniciales[i] = i*filasPorProceso[i];
+			filasFinales[i] = filasIniciales[i]+filasPorProceso[i]-1;
+		}else{
+			filasPorProceso[i] = Y_RESN / numProcs;
+			filasIniciales[i] = filasFinales[i-1]+1;
+			filasFinales[i] = filasIniciales[i]+filasPorProceso[i]-1;
+		}
+		recvcounts[i]=filasPorProceso[i]*X_RESN;
+		displs[i] = filasIniciales[i]*X_RESN;
+	}
 
 	if(rank == 0){	
 		/* Allocate result matrix of Y_RESN x X_RESN */
@@ -80,19 +100,19 @@ int main (int argc, char *argv[])
 		arrFlops = (int *) malloc(numProcs * sizeof(int));
 	}
 
-	vresParcial = (int *) malloc(X_RESN * filasPorProceso * sizeof(int));
+	vresParcial = (int *) malloc(X_RESN * (filasPorProceso[rank]) * sizeof(int));
 	if (!vresParcial){
 		fprintf(stderr, "Error allocating memory\n");
 		return 1;
 	}
-	for (i=0; i<filasPorProceso; i++)
+	for (i=0; i<filasPorProceso[rank]; i++)
 		resParcial[i] = vresParcial + i*X_RESN;
 
 	/* Start measuring time */
 	gettimeofday(&ti, NULL);
 
-	filaInicio = rank*filasPorProceso;
-	filaFin = (rank+1)*filasPorProceso;
+	filaInicio = filasIniciales[rank];
+	filaFin = filasFinales[rank];
 
 	/* Calculate and draw points */
 	for(i=filaInicio; i < filaFin; i++)
@@ -117,23 +137,21 @@ int main (int argc, char *argv[])
 				flops += 10;
 			} while (lengthsq < 4.0 && k < maxIterations);
 
-			if (k >= maxIterations) resParcial[i%filasPorProceso][j] = 0;
-			else resParcial[i%filasPorProceso][j] = k;
+			if (k >= maxIterations) resParcial[i%filasPorProceso[rank]][j] = 0;
+			else resParcial[i%filasPorProceso[rank]][j] = k;
 		}
 	}
 
 	/* End measuring time */
 	gettimeofday(&tf, NULL);
 
-	MPI_Barrier(MPI_COMM_WORLD);
-	
 	tsend = get_seconds(ti,tf);
 	MPI_Gather(&tsend, 1, MPI_FLOAT, 
 				tiempos, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
 	MPI_Gather(&flops, 1, MPI_INT, 
 				arrFlops, 1, MPI_INT, 0, MPI_COMM_WORLD);
-	MPI_Gather(vresParcial, X_RESN*filasPorProceso, MPI_INT, 
-				vres, X_RESN*filasPorProceso, MPI_INT, 0, MPI_COMM_WORLD);
+	MPI_Gatherv(vresParcial, recvcounts[rank], MPI_INT, 
+				vres, recvcounts, displs, MPI_INT, 0, MPI_COMM_WORLD);
 
 	if(rank == 0){
 		/* Print result out */
