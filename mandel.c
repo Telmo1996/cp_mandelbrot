@@ -34,19 +34,46 @@ static inline double get_seconds(struct timeval t_ini, struct timeval t_end)
          (t_end.tv_sec - t_ini.tv_sec);
 }
 
+int calcularMandelbrot(int i, int j, int *flops){
+	Compl   z, c;
+	float lengthsq, temp;
+	int k;
+
+	z.real = z.imag = 0.0;
+	c.real = X_MIN + j * (X_MAX - X_MIN)/X_RESN;
+	c.imag = Y_MAX - i * (Y_MAX - Y_MIN)/Y_RESN;
+	k = 0;
+
+	*flops += 8;
+
+	do
+	{    /* iterate for pixel color */
+		temp = z.real*z.real - z.imag*z.imag + c.real;
+		z.imag = 2.0*z.real*z.imag + c.imag;
+		z.real = temp;
+		lengthsq = z.real*z.real+z.imag*z.imag;
+		k++;
+
+		*flops += 10;
+	} while (lengthsq < 4.0 && k < maxIterations);
+
+	return k;
+}
+
 int main (int argc, char *argv[])
 {
+	int numProcs, rank;
 	MPI_Init(&argc, &argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
 	/* Mandelbrot variables */
 	int i, j, k;
-	Compl   z, c;
 	float   lengthsq, temp;
 	int *vres, *res[Y_RESN];
 	int *vresParcial, *resParcial[Y_RESN];
-	int numProcs, rank;
-	int *filasPorProceso, filaInicio, filaFin;
-	int *filasIniciales, *filasFinales;
+	int filasPorProceso[numProcs], filaInicio, filaFin;
+	int filasIniciales[numProcs], filasFinales[numProcs];
 
 	/* Timestamp variables */
 	struct timeval  ti, tf;
@@ -62,28 +89,34 @@ int main (int argc, char *argv[])
 	float balanceo;
 
 
-	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
 	int recvcounts[numProcs];
 	int displs[numProcs];
 
-	filasIniciales = (int*) malloc(numProcs*sizeof(int));
-	filasFinales = (int*) malloc(numProcs*sizeof(int));
+	//filasIniciales = (int*) malloc(numProcs*sizeof(int));
+	//filasFinales = (int*) malloc(numProcs*sizeof(int));
 
 	//Calcular filas iniciales y finales de cada proceso
 	for(i=0; i<numProcs; i++){
 		if(i < Y_RESN%numProcs){
-			filasPorProceso[i] = Y_RESN % numProcs +1;
+			filasPorProceso[i] = Y_RESN / numProcs +1;
 			filasIniciales[i] = i*filasPorProceso[i];
 			filasFinales[i] = filasIniciales[i]+filasPorProceso[i]-1;
 		}else{
-			filasPorProceso[i] = Y_RESN / numProcs;
-			filasIniciales[i] = filasFinales[i-1]+1;
-			filasFinales[i] = filasIniciales[i]+filasPorProceso[i]-1;
+			if(i==0){
+				filasPorProceso[i] = Y_RESN / numProcs;
+				filasIniciales[i] = 0;
+				filasFinales[i] = filasIniciales[i]+filasPorProceso[i]-1;
+			}else{
+				filasPorProceso[i] = Y_RESN / numProcs;
+				filasIniciales[i] = filasFinales[i-1]+1;
+				filasFinales[i] = filasIniciales[i]+filasPorProceso[i]-1;
+			}
 		}
 		recvcounts[i]=filasPorProceso[i]*X_RESN;
 		displs[i] = filasIniciales[i]*X_RESN;
+		//if(rank == 0)
+		//	fprintf(stderr, "%i, %i, %i: %i\n", filasPorProceso[i], filasIniciales[i], filasFinales[i], Y_RESN%numProcs);
 	}
 
 	if(rank == 0){	
@@ -115,43 +148,33 @@ int main (int argc, char *argv[])
 	filaFin = filasFinales[rank];
 
 	/* Calculate and draw points */
-	for(i=filaInicio; i < filaFin; i++)
+	for(i=filaInicio; i <= filaFin; i++)
 	{
 		for(j=0; j < X_RESN; j++)
 		{
-			z.real = z.imag = 0.0;
-			c.real = X_MIN + j * (X_MAX - X_MIN)/X_RESN;
-			c.imag = Y_MAX - i * (Y_MAX - Y_MIN)/Y_RESN;
-			k = 0;
+			k = calcularMandelbrot(i, j, &flops);
 
-			flops += 8;
-
-			do
-			{    /* iterate for pixel color */
-				temp = z.real*z.real - z.imag*z.imag + c.real;
-				z.imag = 2.0*z.real*z.imag + c.imag;
-				z.real = temp;
-				lengthsq = z.real*z.real+z.imag*z.imag;
-				k++;
-
-				flops += 10;
-			} while (lengthsq < 4.0 && k < maxIterations);
-
-			if (k >= maxIterations) resParcial[i%filasPorProceso[rank]][j] = 0;
-			else resParcial[i%filasPorProceso[rank]][j] = k;
+			if (k >= maxIterations) resParcial[i-filasIniciales[rank]][j] = 0;
+			else resParcial[i-filasIniciales[rank]][j] = k;
 		}
 	}
 
 	/* End measuring time */
 	gettimeofday(&tf, NULL);
-
 	tsend = get_seconds(ti,tf);
+
+	//Comunicaciones;
+	if(rank == 0)
+		gettimeofday(&ti, NULL);
 	MPI_Gather(&tsend, 1, MPI_FLOAT, 
 				tiempos, 1, MPI_FLOAT, 0, MPI_COMM_WORLD);
 	MPI_Gather(&flops, 1, MPI_INT, 
 				arrFlops, 1, MPI_INT, 0, MPI_COMM_WORLD);
 	MPI_Gatherv(vresParcial, recvcounts[rank], MPI_INT, 
 				vres, recvcounts, displs, MPI_INT, 0, MPI_COMM_WORLD);
+	if(rank == 0)
+		gettimeofday(&tf, NULL);
+
 
 	if(rank == 0){
 		/* Print result out */
@@ -179,7 +202,7 @@ int main (int argc, char *argv[])
 		}
 
 		fprintf (stderr, "\nTiempo total = %lf\n", maxt);
-
+		fprintf (stderr, "Tiempo Comunicaciones = %lf\n", get_seconds(ti, tf));
 		balanceo = (flopsTotal) / ((float)maxFlops * (float)numProcs);
 		fprintf (stderr, "Balanceo = %lf\n", balanceo);
 
